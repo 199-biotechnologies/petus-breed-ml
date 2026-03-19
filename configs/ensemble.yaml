@@ -1,0 +1,36 @@
+# Ensemble and distillation configuration
+
+ensemble:
+  models:
+    - efficientnetv2_s
+    - convnextv2_tiny
+    - dinov2_vitb14
+    - siglip2_vitb
+  meta_learner: logistic_regression
+  meta_features:
+    - top1_prob
+    - margin
+    - entropy
+    - top5_probs  # 5 values per model
+  # Total features per model: 1 + 1 + 1 + 5 = 8, × 4 models = 32
+
+tta:
+  enabled: true
+  confidence_threshold: 0.7
+  augmentations:
+    - horizontal_flip
+    - five_crop
+    - multi_scale  # [0.9, 1.0, 1.1]
+
+calibration:
+  method: temperature_scaling
+  ece_bins: 15
+
+distillation:
+  teacher: ensemble
+  student: efficientnetv2_s
+  temperature: 4.0
+  alpha_soft: 0.7
+  alpha_hard: 0.3
+  epochs: 20
+  lr: 5e-4

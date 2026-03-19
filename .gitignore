@@ -1,0 +1,31 @@
+# Dataset (download via scripts/download_dataset.py)
+data/
+
+# Model checkpoints
+models/*.pt
+models/*.pkl
+models/*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Virtual environments
+venv/
+.venv/
+env/

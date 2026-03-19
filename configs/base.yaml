@@ -1,0 +1,33 @@
+# Base training configuration for petus-breed-ml
+# All backbone-specific overrides inherit from these defaults
+
+training:
+  epochs: 30
+  warmup_epochs: 2
+  batch_size: 64
+  lr: 1e-3
+  backbone_lr_mult: 0.1
+  weight_decay: 0.01
+  label_smoothing: 0.1
+  mixup_alpha: 0.2
+  cutmix_alpha: 1.0
+  mixup_prob: 0.5
+
+data:
+  img_size: 224
+  num_classes: 120
+  num_workers: 4
+  pin_memory: true
+  train_split: "train"
+  test_split: "test"
+
+augmentation:
+  hflip_prob: 0.5
+  color_jitter: 0.3
+  random_erasing_prob: 0.1
+  randaugment_n: 2
+  randaugment_m: 9
+
+device:
+  prefer: "mps"  # M4 Max
+  fallback: "cpu"
