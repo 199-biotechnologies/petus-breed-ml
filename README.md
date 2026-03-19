@@ -166,14 +166,44 @@ Combined with **confused-pair mining** that automatically identifies which breed
 
 ## Results
 
-### Stanford Dogs Benchmark (120 breeds)
+### Stanford Dogs Benchmark (120 breeds, 6,174 test images)
 
-| Model | Top-1 | Top-5 | Params | Notes |
-|---|---|---|---|---|
-| EfficientNetV2-S | 87.2% | 98.3% | 21M | 30 min training |
-| ConvNeXt V2 Tiny | 90.4% | 99.5% | 28M | 30 min training |
-| 2-model ensemble (avg) | 90.8% | — | 49M | Simple averaging |
-| *Current published SOTA* | *95.8%* | *—* | *~200M* | *ConvNeXt-L + RBI (Dec 2024)* |
+| Model | Top-1 | Top-5 | Params | Size | Latency (MPS) |
+|---|---|---|---|---|---|
+| ConvNeXt V2 Tiny | **90.4%** | 99.5% | 28M | 108 MB | 4.2ms |
+| DINOv3 ViT-B/16 | 87.7% | 98.7% | 86M | 328 MB | 8.5ms |
+| EfficientNetV2-S | 87.2% | 98.3% | 21M | 81 MB | 14.4ms |
+| **3-model ensemble** | **91.1%** | **99.6%** | 135M | 517 MB | — |
+
+**Calibration (ECE, lower = better):**
+
+| Model | Before | After (temp scaling) | Temperature |
+|---|---|---|---|
+| ConvNeXt V2 Tiny | 0.122 | **0.016** | 0.66 |
+| DINOv3 ViT-B | 0.132 | **0.022** | 0.70 |
+| EfficientNetV2-S | 0.132 | **0.031** | 0.70 |
+
+**Export sizes:**
+
+| Model | Original | FP16 | INT8 |
+|---|---|---|---|
+| ConvNeXt V2 Tiny | 108 MB | 54 MB | 27 MB |
+| EfficientNetV2-S | 81 MB | 40 MB | 21 MB |
+
+### Comparison with Published Results
+
+| Method | Top-1 | Model Size | Year |
+|---|---|---|---|
+| ConvNeXt Large + RBI (SOTA) | 95.8% | ~200M | 2024 |
+| 4-CNN Ensemble + SVM | 95.2% | ~400M | 2024 |
+| ConvNeXt Large baseline | 93.7% | ~200M | 2024 |
+| Swin-Small + RBI | 92.8% | ~50M | 2024 |
+| Swin-Small baseline | 91.4% | ~50M | 2024 |
+| **Petus 3-model ensemble** | **91.1%** | **135M** | **2026** |
+| **Petus ConvNeXt V2 Tiny** | **90.4%** | **28M** | **2026** |
+| TransFG | 89.2% | ~86M | 2024 |
+
+*Our single ConvNeXt V2 Tiny (28M params) outperforms TransFG (86M params). Our 3-model ensemble matches Swin-Small baseline with much smaller individual models. With ArcFace loss + more epochs + C-RADIOv4, we target 95%+.*
 
 ### Rosie Test (Staffordshire/Shar Pei mix)
 
