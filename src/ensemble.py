@@ -43,6 +43,21 @@ def extract_meta_features(probs: np.ndarray) -> np.ndarray:
     return np.concatenate([top1, margin, entropy, top5], axis=1)  # (N, 8)
 
 
+def extract_logit_features(probs: np.ndarray) -> np.ndarray:
+    """Use full calibrated log-probabilities as features (Codex recommendation).
+
+    With 3 models × 120 classes = 360 features. LogisticRegression with
+    strong L2 regularization handles this well and preserves breed-specific
+    information that summary statistics throw away.
+
+    Args:
+        probs: (N, num_classes) softmax probabilities
+    Returns:
+        (N, num_classes) log-probabilities
+    """
+    return np.log(probs + 1e-10)
+
+
 @torch.no_grad()
 def collect_predictions(
     model: BreedClassifier,
@@ -65,11 +80,21 @@ def collect_predictions(
 
 
 class StackingEnsemble:
-    """Meta-learner that combines predictions from multiple backbone models."""
+    """Meta-learner that combines predictions from multiple backbone models.
 
-    def __init__(self):
+    Supports two feature modes:
+    - "meta": 8 summary features per model (top1, margin, entropy, top5)
+    - "logits": Full log-probabilities per model (num_classes features each)
+      → 3 models × 120 classes = 360 features. Much more expressive.
+    """
+
+    def __init__(self, feature_mode: str = "logits"):
+        assert feature_mode in ("meta", "logits"), f"Unknown mode: {feature_mode}"
+        self.feature_mode = feature_mode
+        # Stronger L2 for logit mode (360 features needs more regularization)
+        C = 0.1 if feature_mode == "logits" else 1.0
         self.meta_learner = LogisticRegression(
-            C=1.0, max_iter=1000, solver="lbfgs", n_jobs=-1,
+            C=C, max_iter=2000, solver="lbfgs", n_jobs=-1,
         )
         self.scaler = StandardScaler()
         self.model_names: list[str] = []
@@ -90,11 +115,12 @@ class StackingEnsemble:
         """
         self.model_names = sorted(model_predictions.keys())
 
-        # Extract meta-features from each model and concatenate
+        # Extract features from each model and concatenate
+        extractor = extract_logit_features if self.feature_mode == "logits" else extract_meta_features
         all_features = []
         for name in self.model_names:
             probs = model_predictions[name]
-            features = extract_meta_features(probs)
+            features = extractor(probs)
             all_features.append(features)
 
         X = np.concatenate(all_features, axis=1)  # (N, 8 * num_models)
@@ -120,11 +146,12 @@ class StackingEnsemble:
         if not self.fitted:
             raise RuntimeError("Ensemble not fitted. Call fit() first.")
 
+        extractor = extract_logit_features if self.feature_mode == "logits" else extract_meta_features
         all_features = []
         for name in self.model_names:
             if name not in model_predictions:
                 raise ValueError(f"Missing predictions for model '{name}'")
-            features = extract_meta_features(model_predictions[name])
+            features = extractor(model_predictions[name])
             all_features.append(features)
 
         X = np.concatenate(all_features, axis=1)
