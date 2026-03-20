@@ -168,12 +168,14 @@ Combined with **confused-pair mining** that automatically identifies which breed
 
 ### Stanford Dogs Benchmark (120 breeds, 6,174 test images)
 
-| Model | Top-1 | Top-5 | Params | Size | Latency (MPS) |
-|---|---|---|---|---|---|
-| ConvNeXt V2 Tiny | **90.4%** | 99.5% | 28M | 108 MB | 4.2ms |
-| DINOv3 ViT-B/16 | 87.7% | 98.7% | 86M | 328 MB | 8.5ms |
-| EfficientNetV2-S | 87.2% | 98.3% | 21M | 81 MB | 14.4ms |
-| **3-model ensemble** | **91.1%** | **99.6%** | 135M | 517 MB | — |
+**v2 Recipe** (LLRD unfreeze, 3-phase training, proper val/test split):
+
+| Model | Val Top-1 | Test Top-1 | Params | Size |
+|---|---|---|---|---|
+| ConvNeXt V2 Tiny | **91.8%** | **90.7%** | 28M | 108 MB |
+| DINOv3 ViT-B/16 | 89.2% | 87.3% | 86M | 328 MB |
+| EfficientNetV2-S | 88.8% | 88.8% | 21M | 81 MB |
+| **3-model ensemble** | — | **91.5%** | 135M | 517 MB |
 
 **Calibration (ECE, lower = better):**
 
@@ -199,11 +201,11 @@ Combined with **confused-pair mining** that automatically identifies which breed
 | ConvNeXt Large baseline | 93.7% | ~200M | 2024 |
 | Swin-Small + RBI | 92.8% | ~50M | 2024 |
 | Swin-Small baseline | 91.4% | ~50M | 2024 |
-| **Petus 3-model ensemble** | **91.1%** | **135M** | **2026** |
-| **Petus ConvNeXt V2 Tiny** | **90.4%** | **28M** | **2026** |
+| **Petus 3-model ensemble** | **91.5%** | **135M** | **2026** |
+| **Petus ConvNeXt V2 Tiny** | **90.7%** | **28M** | **2026** |
 | TransFG | 89.2% | ~86M | 2024 |
 
-*Our single ConvNeXt V2 Tiny (28M params) outperforms TransFG (86M params). Our 3-model ensemble matches Swin-Small baseline with much smaller individual models. With ArcFace loss + more epochs + C-RADIOv4, we target 95%+.*
+*Our single ConvNeXt V2 Tiny (28M params) outperforms TransFG (86M). Our 3-model ensemble (135M total) at 91.5% matches Swin-Small baseline while being 10× smaller than SOTA. Next: ArcFace loss + progressive resizing + RBI to close the remaining 4.3% gap.*
 
 ### Rosie Test (Staffordshire/Shar Pei mix)
 
