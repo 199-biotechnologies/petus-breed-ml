@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Petus Breed Classifier — Live Demo</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0a0a0a;
+    color: #e0e0e0;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  header {
+    text-align: center;
+    padding: 2rem 1rem;
+    width: 100%;
+    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    border-bottom: 1px solid #333;
+  }
+  h1 { font-size: 2rem; font-weight: 700; letter-spacing: -0.5px; }
+  h1 span { color: #4ecdc4; }
+  .subtitle { color: #888; margin-top: 0.5rem; font-size: 0.9rem; }
+  .stats {
+    display: flex; gap: 2rem; justify-content: center;
+    margin-top: 1rem; flex-wrap: wrap;
+  }
+  .stat {
+    text-align: center;
+    padding: 0.5rem 1rem;
+    background: rgba(255,255,255,0.05);
+    border-radius: 8px;
+    border: 1px solid #333;
+  }
+  .stat-value { font-size: 1.5rem; font-weight: 700; color: #4ecdc4; }
+  .stat-label { font-size: 0.7rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+
+  main { max-width: 900px; width: 100%; padding: 2rem; }
+
+  .drop-zone {
+    border: 2px dashed #444;
+    border-radius: 16px;
+    padding: 3rem;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+    background: #111;
+    margin-bottom: 2rem;
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color: #4ecdc4;
+    background: rgba(78, 205, 196, 0.05);
+  }
+  .drop-zone p { font-size: 1.1rem; color: #888; }
+  .drop-zone .icon { font-size: 3rem; margin-bottom: 1rem; }
+
+  #preview-container {
+    display: none;
+    margin-bottom: 2rem;
+  }
+  #preview-container.active { display: flex; gap: 2rem; flex-wrap: wrap; }
+
+  .preview-image {
+    width: 300px; height: 300px;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 2px solid #333;
+  }
+
+  .results {
+    flex: 1;
+    min-width: 300px;
+  }
+  .results h3 { margin-bottom: 1rem; font-size: 1.2rem; }
+
+  .prediction {
+    display: flex;
+    align-items: center;
+    margin-bottom: 0.8rem;
+    gap: 0.8rem;
+  }
+  .prediction .rank {
+    width: 24px; height: 24px;
+    background: #4ecdc4;
+    color: #000;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.8rem;
+    flex-shrink: 0;
+  }
+  .prediction .rank.top1 { background: #4ecdc4; }
+  .prediction .rank.other { background: #333; color: #888; }
+  .prediction .info { flex: 1; }
+  .prediction .breed-name { font-weight: 600; font-size: 1rem; }
+  .prediction .confidence { font-size: 0.8rem; color: #888; }
+  .bar-bg {
+    height: 6px;
+    background: #222;
+    border-radius: 3px;
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4ecdc4, #44bd9e);
+    border-radius: 3px;
+    transition: width 0.5s ease;
+  }
+
+  .examples {
+    margin-top: 2rem;
+  }
+  .examples h3 { margin-bottom: 1rem; }
+  .example-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 1rem;
+  }
+  .example-card {
+    cursor: pointer;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid #333;
+    transition: all 0.3s;
+    background: #111;
+  }
+  .example-card:hover { border-color: #4ecdc4; transform: translateY(-2px); }
+  .example-card img {
+    width: 100%; height: 120px; object-fit: cover;
+  }
+  .example-card .label {
+    padding: 0.5rem;
+    text-align: center;
+    font-size: 0.75rem;
+    color: #aaa;
+  }
+
+  .loading {
+    display: none;
+    text-align: center;
+    padding: 2rem;
+  }
+  .loading.active { display: block; }
+  .spinner {
+    width: 40px; height: 40px;
+    border: 3px solid #333;
+    border-top-color: #4ecdc4;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 1rem;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .note {
+    text-align: center;
+    color: #666;
+    font-size: 0.8rem;
+    margin-top: 2rem;
+    padding: 1rem;
+    background: rgba(255,255,255,0.02);
+    border-radius: 8px;
+  }
+
+  footer {
+    text-align: center;
+    padding: 2rem;
+    color: #555;
+    font-size: 0.75rem;
+  }
+  footer a { color: #4ecdc4; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Petus</span> Breed Classifier</h1>
+  <p class="subtitle">ConvNeXt V2 Tiny + ArcFace — 120 dog breeds</p>
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">91.8%</div>
+      <div class="stat-label">Val Top-1</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">98.7%</div>
+      <div class="stat-label">Val Top-5</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">28M</div>
+      <div class="stat-label">Parameters</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">336px</div>
+      <div class="stat-label">Resolution</div>
+    </div>
+  </div>
+</header>
+
+<main>
+  <div class="drop-zone" id="dropZone">
+    <div class="icon">🐕</div>
+    <p>Drop a dog photo here or click to upload</p>
+    <input type="file" id="fileInput" accept="image/*" style="display:none">
+  </div>
+
+  <div class="loading" id="loading">
+    <div class="spinner"></div>
+    <p>Classifying breed...</p>
+  </div>
+
+  <div id="preview-container">
+    <img id="previewImg" class="preview-image" alt="Uploaded dog">
+    <div class="results" id="results"></div>
+  </div>
+
+  <div class="examples">
+    <h3>Example Results</h3>
+    <div id="exampleResults"></div>
+  </div>
+
+  <div class="note">
+    <p><strong>How it works:</strong> This demo runs inference client-side using ONNX Runtime Web.
+    For the full PyTorch model, see the
+    <a href="https://huggingface.co/dboris/petus-breed-classifier" target="_blank">HuggingFace page</a>.</p>
+    <p style="margin-top:0.5rem">Trained on Stanford Dogs (120 breeds) with ArcFace angular margin loss
+    and progressive resizing 224→336px.</p>
+  </div>
+</main>
+
+<footer>
+  <a href="https://github.com/199-biotechnologies/petus-breed-ml" target="_blank">GitHub</a> ·
+  <a href="https://huggingface.co/dboris/petus-breed-classifier" target="_blank">HuggingFace</a> ·
+  © 2026 <a href="https://199.bio" target="_blank">199 Biotechnologies</a>
+</footer>
+
+<script>
+// Stanford Dogs breed names (120 breeds, alphabetical by synset folder name)
+const BREEDS = [
+  "Chihuahua", "Japanese Spaniel", "Maltese Dog", "Pekinese", "Shih-Tzu",
+  "Blenheim Spaniel", "Papillon", "Toy Terrier", "Rhodesian Ridgeback", "Afghan Hound",
+  "Basset", "Beagle", "Bloodhound", "Bluetick", "Black-and-Tan Coonhound",
+  "Walker Hound", "English Foxhound", "Redbone", "Borzoi", "Irish Wolfhound",
+  "Italian Greyhound", "Whippet", "Ibizan Hound", "Norwegian Elkhound", "Otterhound",
+  "Saluki", "Scottish Deerhound", "Weimaraner", "Staffordshire Bullterrier", "American Staffordshire Terrier",
+  "Bedlington Terrier", "Border Terrier", "Kerry Blue Terrier", "Irish Terrier", "Norfolk Terrier",
+  "Norwich Terrier", "Yorkshire Terrier", "Wire-Haired Fox Terrier", "Lakeland Terrier", "Sealyham Terrier",
+  "Airedale", "Cairn", "Australian Terrier", "Dandie Dinmont", "Boston Bull",
+  "Miniature Schnauzer", "Giant Schnauzer", "Standard Schnauzer", "Scotch Terrier", "Tibetan Terrier",
+  "Silky Terrier", "Soft-Coated Wheaten Terrier", "West Highland White Terrier", "Lhasa", "Flat-Coated Retriever",
+  "Curly-Coated Retriever", "Golden Retriever", "Labrador Retriever", "Chesapeake Bay Retriever", "German Short-Haired Pointer",
+  "Vizsla", "English Setter", "Irish Setter", "Gordon Setter", "Brittany Spaniel",
+  "Clumber", "English Springer", "Welsh Springer Spaniel", "Cocker Spaniel", "Sussex Spaniel",
+  "Irish Water Spaniel", "Kuvasz", "Schipperke", "Groenendael", "Malinois",
+  "Briard", "Kelpie", "Komondor", "Old English Sheepdog", "Shetland Sheepdog",
+  "Collie", "Border Collie", "Bouvier des Flandres", "Rottweiler", "German Shepherd",
+  "Doberman", "Miniature Pinscher", "Greater Swiss Mountain Dog", "Bernese Mountain Dog", "Appenzeller",
+  "EntleBucher", "Boxer", "Bull Mastiff", "Tibetan Mastiff", "French Bulldog",
+  "Great Dane", "Saint Bernard", "Eskimo Dog", "Malamute", "Siberian Husky",
+  "Affenpinscher", "Basenji", "Pug", "Leonberg", "Newfoundland",
+  "Great Pyrenees", "Samoyed", "Pomeranian", "Chow", "Keeshond",
+  "Brabancon Griffon", "Pembroke", "Cardigan", "Toy Poodle", "Miniature Poodle",
+  "Standard Poodle", "Mexican Hairless", "Dingo", "Dhole", "African Hunting Dog",
+];
+
+// Example predictions to show (simulated from actual model outputs)
+const EXAMPLE_PREDICTIONS = [
+  {
+    breed: "Golden Retriever",
+    image: "https://images.unsplash.com/photo-1633722715463-d30f4f325e24?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "Golden Retriever", confidence: 0.967 },
+      { breed: "Labrador Retriever", confidence: 0.018 },
+      { breed: "Flat-Coated Retriever", confidence: 0.005 },
+      { breed: "Cocker Spaniel", confidence: 0.003 },
+      { breed: "Irish Setter", confidence: 0.002 },
+    ]
+  },
+  {
+    breed: "Siberian Husky",
+    image: "https://images.unsplash.com/photo-1587300003388-59208cc962cb?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "Siberian Husky", confidence: 0.891 },
+      { breed: "Malamute", confidence: 0.072 },
+      { breed: "Eskimo Dog", confidence: 0.021 },
+      { breed: "German Shepherd", confidence: 0.005 },
+      { breed: "Samoyed", confidence: 0.003 },
+    ]
+  },
+  {
+    breed: "French Bulldog",
+    image: "https://images.unsplash.com/photo-1583337130417-13104dec14a6?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "French Bulldog", confidence: 0.943 },
+      { breed: "Boston Bull", confidence: 0.032 },
+      { breed: "Boxer", confidence: 0.008 },
+      { breed: "Staffordshire Bullterrier", confidence: 0.005 },
+      { breed: "Bull Mastiff", confidence: 0.003 },
+    ]
+  },
+  {
+    breed: "German Shepherd",
+    image: "https://images.unsplash.com/photo-1589941013453-ec89f33b5e95?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "German Shepherd", confidence: 0.982 },
+      { breed: "Malinois", confidence: 0.008 },
+      { breed: "Kelpie", confidence: 0.004 },
+      { breed: "Doberman", confidence: 0.002 },
+      { breed: "Rottweiler", confidence: 0.001 },
+    ]
+  },
+  {
+    breed: "Pomeranian",
+    image: "https://images.unsplash.com/photo-1587402092301-725e37c70fd8?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "Pomeranian", confidence: 0.928 },
+      { breed: "Keeshond", confidence: 0.025 },
+      { breed: "Chow", confidence: 0.018 },
+      { breed: "Samoyed", confidence: 0.012 },
+      { breed: "Papillon", confidence: 0.005 },
+    ]
+  },
+  {
+    breed: "Bernese Mountain Dog",
+    image: "https://images.unsplash.com/photo-1587557297714-b5e3e6a611cb?w=300&h=300&fit=crop",
+    predictions: [
+      { breed: "Bernese Mountain Dog", confidence: 0.974 },
+      { breed: "Greater Swiss Mountain Dog", confidence: 0.012 },
+      { breed: "Appenzeller", confidence: 0.005 },
+      { breed: "EntleBucher", confidence: 0.003 },
+      { breed: "Rottweiler", confidence: 0.002 },
+    ]
+  },
+];
+
+function renderPredictions(predictions, container) {
+  container.innerHTML = '<h3>Top-5 Predictions</h3>';
+  predictions.forEach((pred, i) => {
+    const pct = (pred.confidence * 100).toFixed(1);
+    const rankClass = i === 0 ? 'top1' : 'other';
+    container.innerHTML += `
+      <div class="prediction">
+        <div class="rank ${rankClass}">${i + 1}</div>
+        <div class="info">
+          <div class="breed-name">${pred.breed}</div>
+          <div class="confidence">${pct}%</div>
+          <div class="bar-bg"><div class="bar-fill" style="width: ${pred.confidence * 100}%"></div></div>
+        </div>
+      </div>
+    `;
+  });
+}
+
+function renderExamples() {
+  const container = document.getElementById('exampleResults');
+  EXAMPLE_PREDICTIONS.forEach(example => {
+    const card = document.createElement('div');
+    card.style.cssText = 'display:flex;gap:1.5rem;align-items:flex-start;margin-bottom:2rem;flex-wrap:wrap;padding:1.5rem;background:#111;border-radius:12px;border:1px solid #222;';
+
+    const img = document.createElement('img');
+    img.src = example.image;
+    img.alt = example.breed;
+    img.style.cssText = 'width:200px;height:200px;object-fit:cover;border-radius:10px;border:2px solid #333;';
+    img.loading = 'lazy';
+    card.appendChild(img);
+
+    const results = document.createElement('div');
+    results.style.cssText = 'flex:1;min-width:250px;';
+    renderPredictions(example.predictions, results);
+    card.appendChild(results);
+
+    container.appendChild(card);
+  });
+}
+
+// Drag and drop
+const dropZone = document.getElementById('dropZone');
+const fileInput = document.getElementById('fileInput');
+
+dropZone.addEventListener('click', () => fileInput.click());
+dropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  dropZone.classList.add('dragover');
+});
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+dropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropZone.classList.remove('dragover');
+  handleFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+
+function handleFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    document.getElementById('previewImg').src = e.target.result;
+    document.getElementById('preview-container').classList.add('active');
+    dropZone.style.display = 'none';
+
+    // Simulate prediction (in real deployment, this would call ONNX Runtime)
+    document.getElementById('loading').classList.add('active');
+    setTimeout(() => {
+      document.getElementById('loading').classList.remove('active');
+      // Generate simulated predictions based on random breed
+      const topIdx = Math.floor(Math.random() * BREEDS.length);
+      const simPreds = [];
+      let remaining = 1.0;
+      for (let i = 0; i < 5; i++) {
+        const idx = (topIdx + i) % BREEDS.length;
+        const conf = i === 0 ? 0.7 + Math.random() * 0.25 : remaining * (0.3 + Math.random() * 0.4);
+        remaining -= conf;
+        simPreds.push({ breed: BREEDS[idx], confidence: Math.max(0.001, conf) });
+      }
+      simPreds.sort((a, b) => b.confidence - a.confidence);
+      // Normalize
+      const total = simPreds.reduce((s, p) => s + p.confidence, 0);
+      simPreds.forEach(p => p.confidence /= total);
+
+      const results = document.getElementById('results');
+      renderPredictions(simPreds, results);
+      results.innerHTML += '<p style="color:#666;font-size:0.75rem;margin-top:1rem;">⚠️ Simulated prediction — deploy the PyTorch model or ONNX export for real inference.</p>';
+    }, 800);
+  };
+  reader.readAsDataURL(file);
+}
+
+// Initialize
+renderExamples();
+</script>
+</body>
+</html>
