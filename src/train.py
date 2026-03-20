@@ -1,9 +1,11 @@
 """
 2-phase training pipeline for dog breed classification.
 
-Adapted from unblurml/src/train.py:
-- Phase 1: Frozen backbone, train MLP head only, OneCycleLR warmup
-- Phase 2: Unfreeze backbone, differential LR (backbone 0.1×), CosineAnnealingLR
+v3 recipe:
+- Phase 1: Frozen backbone, train head only, OneCycleLR warmup
+- Phase 2: Unfreeze backbone, differential LR (backbone 0.01×), CosineAnnealingLR
+- ArcFace angular margin loss (optional, default on)
+- Progressive resizing 224→336 mid-training
 - Label smoothing, MixUp/CutMix at batch level
 - MPS-optimized for M4 Max
 """
@@ -21,6 +23,7 @@ import numpy as np
 
 from .registry import get_backbone, list_backbones
 from .heads.mlp_head import MLPHead
+from .losses import ArcFaceHead
 from .augmentations import mixup_data, cutmix_data, mixup_criterion
 
 
@@ -36,16 +39,36 @@ def get_device():
 
 
 class BreedClassifier(nn.Module):
-    """Backbone + MLP head — the full model for a single backbone."""
+    """Backbone + head — supports both MLP (CE) and ArcFace modes."""
 
-    def __init__(self, backbone_name: str, num_classes: int = NUM_CLASSES, pretrained: bool = True):
+    def __init__(
+        self,
+        backbone_name: str,
+        num_classes: int = NUM_CLASSES,
+        pretrained: bool = True,
+        use_arcface: bool = False,
+        arcface_scale: float = 30.0,
+        arcface_margin: float = 0.3,
+    ):
         super().__init__()
         self.backbone = get_backbone(backbone_name, pretrained=pretrained)
-        self.head = MLPHead(self.backbone.embed_dim, num_classes)
         self.backbone_name = backbone_name
+        self.use_arcface = use_arcface
 
-    def forward(self, x):
+        if use_arcface:
+            self.head = ArcFaceHead(
+                embed_dim=self.backbone.embed_dim,
+                num_classes=num_classes,
+                scale=arcface_scale,
+                margin=arcface_margin,
+            )
+        else:
+            self.head = MLPHead(self.backbone.embed_dim, num_classes)
+
+    def forward(self, x, labels=None):
         features = self.backbone(x)
+        if self.use_arcface:
+            return self.head(features, labels)
         return self.head(features)
 
     def freeze_backbone(self):
@@ -78,30 +101,40 @@ def train_one_epoch(
     total_loss = 0.0
     correct = 0
     total = 0
+    is_arcface = getattr(model, "use_arcface", False)
 
     pbar = tqdm(loader, desc="Train", leave=False)
     for images, labels in pbar:
         images = images.to(device)
         labels = labels.to(device)
 
-        # MixUp / CutMix
-        r = np.random.random()
-        if r < mix_prob / 2:
-            images, targets_a, targets_b, lam = mixup_data(images, labels, mixup_alpha)
-            use_mix = True
-        elif r < mix_prob:
-            images, targets_a, targets_b, lam = cutmix_data(images, labels, cutmix_alpha)
-            use_mix = True
-        else:
-            use_mix = False
-
         optimizer.zero_grad()
-        outputs = model(images)
 
-        if use_mix:
-            loss = mixup_criterion(criterion, outputs, targets_a, targets_b, lam)
+        if is_arcface:
+            # ArcFace: no MixUp/CutMix (margin loss needs clean labels)
+            # Head returns loss directly during training
+            loss = model(images, labels)
+            # For accuracy tracking, do inference pass (no grad)
+            with torch.no_grad():
+                logits = model(images)  # labels=None → returns logits
         else:
-            loss = criterion(outputs, labels)
+            # Standard CE path with MixUp/CutMix
+            r = np.random.random()
+            if r < mix_prob / 2:
+                images, targets_a, targets_b, lam = mixup_data(images, labels, mixup_alpha)
+                use_mix = True
+            elif r < mix_prob:
+                images, targets_a, targets_b, lam = cutmix_data(images, labels, cutmix_alpha)
+                use_mix = True
+            else:
+                use_mix = False
+
+            logits = model(images)
+
+            if use_mix:
+                loss = mixup_criterion(criterion, logits, targets_a, targets_b, lam)
+            else:
+                loss = criterion(logits, labels)
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -111,7 +144,7 @@ def train_one_epoch(
             scheduler.step()
 
         total_loss += loss.item() * images.size(0)
-        _, predicted = outputs.max(1)
+        _, predicted = logits.max(1)
         correct += predicted.eq(labels).sum().item()
         total += labels.size(0)
 
@@ -136,11 +169,13 @@ def evaluate(
     correct = 0
     correct_top5 = 0
     total = 0
+    is_arcface = getattr(model, "use_arcface", False)
 
     for images, labels in tqdm(loader, desc="Eval", leave=False):
         images = images.to(device)
         labels = labels.to(device)
 
+        # ArcFace in eval: labels=None returns cosine similarity logits
         outputs = model(images)
         loss = criterion(outputs, labels)
 
@@ -159,11 +194,54 @@ def evaluate(
     }
 
 
+def _build_loaders(data_dir, preprocess_config, batch_size, img_size_override=None):
+    """Build train/val/test dataloaders, optionally overriding image size.
+
+    Used by progressive resizing to rebuild loaders at a new resolution.
+    """
+    from .dataset import get_transforms
+    from torchvision import datasets
+
+    if img_size_override is not None:
+        preprocess_config = {**preprocess_config, "input_size": img_size_override}
+
+    train_transform = get_transforms(preprocess_config, is_train=True)
+    val_transform = get_transforms(preprocess_config, is_train=False)
+
+    train_dir = os.path.join(data_dir, "train")
+    val_dir = os.path.join(data_dir, "val")
+    test_dir = os.path.join(data_dir, "test")
+
+    train_ds = datasets.ImageFolder(train_dir, transform=train_transform)
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True,
+        num_workers=4, pin_memory=True, drop_last=True, persistent_workers=True,
+    )
+
+    val_loader = None
+    if os.path.isdir(val_dir):
+        val_ds = datasets.ImageFolder(val_dir, transform=val_transform)
+        val_loader = DataLoader(
+            val_ds, batch_size=batch_size, shuffle=False,
+            num_workers=4, pin_memory=True, persistent_workers=True,
+        )
+
+    test_loader = None
+    if os.path.isdir(test_dir):
+        test_ds = datasets.ImageFolder(test_dir, transform=val_transform)
+        test_loader = DataLoader(
+            test_ds, batch_size=batch_size, shuffle=False,
+            num_workers=4, pin_memory=True, persistent_workers=True,
+        )
+
+    return train_loader, val_loader, test_loader
+
+
 def train_model(
     backbone_name: str,
     train_loader: DataLoader,
     val_loader: DataLoader,
-    epochs: int = 40,
+    epochs: int = 50,
     warmup_epochs: int = 2,
     lr: float = 1e-3,
     backbone_lr_mult: float = 0.01,  # 1/100th — Codex+Gemini recommendation
@@ -173,40 +251,54 @@ def train_model(
     mix_prob: float = 0.5,
     no_aug_final_epochs: int = 5,  # Turn off MixUp/CutMix for last N epochs
     unfreeze_warmup_epochs: int = 3,  # Linear warmup after unfreeze
-    early_stop_patience: int = 8,
+    early_stop_patience: int = 10,
     output_dir: str = "models",
-    time_limit_minutes: float = 120.0,
+    time_limit_minutes: float = 180.0,
+    # ArcFace settings
+    use_arcface: bool = True,
+    arcface_scale: float = 30.0,
+    arcface_margin: float = 0.3,
+    # Progressive resizing: switch to this resolution at resize_at_epoch
+    prog_resize_to: int = None,  # e.g. 336
+    prog_resize_at_epoch: int = None,  # e.g. 15 (absolute epoch number)
+    prog_resize_batch_size: int = None,  # reduced batch for higher res
+    data_dir: str = None,  # needed for progressive resizing to rebuild loaders
     # Keep test_loader for backward compat but don't use for selection
     test_loader: DataLoader = None,
 ) -> dict:
-    """Train with improved recipe (Codex+Gemini recommendations).
+    """Train with v3 recipe (ArcFace + progressive resizing).
 
-    Key improvements over v1:
-    - Val loader for checkpoint selection (not test)
-    - Much lower backbone LR (1/100th of head, was 1/10th)
-    - Linear warmup after unfreeze (prevents gradient shock)
-    - No MixUp/CutMix during initial unfreeze epochs
-    - MixUp/CutMix turned off for final epochs (sharpen features)
-    - Early stopping with patience
+    Key improvements over v2:
+    - ArcFace angular margin loss for fine-grained discrimination
+    - Progressive resizing: start at 224, bump to 336 mid-training
+    - More epochs (50) and patience (10) for thorough convergence
     """
-    # Handle backward compat: if val_loader not provided, use test_loader with warning
     if val_loader is None and test_loader is not None:
         print("  WARNING: Using test_loader for validation (no val_loader provided)")
         val_loader = test_loader
 
     device = get_device()
+    loss_type = "ArcFace" if use_arcface else "CE"
     print(f"\n{'='*60}")
-    print(f"Training: {backbone_name} (v2 recipe)")
+    print(f"Training: {backbone_name} (v3 recipe — {loss_type})")
     print(f"Device: {device}")
     print(f"Backbone LR mult: {backbone_lr_mult} (1/{int(1/backbone_lr_mult)}th of head)")
+    if prog_resize_to:
+        print(f"Progressive resize: 224 → {prog_resize_to} at epoch {prog_resize_at_epoch}")
     print(f"{'='*60}")
 
-    model = BreedClassifier(backbone_name)
+    model = BreedClassifier(
+        backbone_name,
+        use_arcface=use_arcface,
+        arcface_scale=arcface_scale,
+        arcface_margin=arcface_margin,
+    )
     model = model.to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Total parameters: {total_params:,}")
 
+    # CE criterion used for eval (always) and for training if not ArcFace
     criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
     os.makedirs(output_dir, exist_ok=True)
 
@@ -215,6 +307,7 @@ def train_model(
     history = []
     start_time = time.time()
     time_limit_sec = time_limit_minutes * 60
+    current_img_size = 224
 
     # ─── Phase 1: Frozen backbone, train head only (no augmentation) ───
     print(f"\n[Phase 1] Frozen backbone — training head ({warmup_epochs} epochs)")
@@ -240,7 +333,7 @@ def train_model(
         epoch_time = time.time() - epoch_start
 
         record = {
-            "epoch": epoch + 1, "phase": 1,
+            "epoch": epoch + 1, "phase": 1, "img_size": current_img_size,
             "train_loss": train_loss, "train_acc": train_acc,
             **val_metrics, "epoch_time": epoch_time,
         }
@@ -263,13 +356,9 @@ def train_model(
 
     model.unfreeze_backbone()
     param_groups = model.get_param_groups(lr, backbone_lr_mult)
-    # Store initial LR for warmup reference
     for pg in param_groups:
         pg['initial_lr'] = pg['lr']
-    # Use weight_decay=0.05 for better regularization (Gemini rec)
     optimizer = optim.AdamW(param_groups, weight_decay=0.05)
-
-    # Cosine schedule with warmup
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=remaining, eta_min=1e-6)
 
     for epoch in range(remaining):
@@ -280,24 +369,38 @@ def train_model(
 
         epoch_num = warmup_epochs + epoch + 1
 
-        # Decide MixUp/CutMix schedule:
-        # - First unfreeze_warmup_epochs: NO augmentation (prevent gradient shock)
-        # - Middle epochs: full augmentation
-        # - Last no_aug_final_epochs: NO augmentation (sharpen features)
-        if epoch < unfreeze_warmup_epochs:
-            # Gentle unfreeze warmup — no batch augmentation
+        # ─── Progressive resizing: switch resolution mid-training ───
+        if (prog_resize_to and prog_resize_at_epoch
+                and epoch_num == prog_resize_at_epoch
+                and data_dir is not None):
+            print(f"\n  >>> PROGRESSIVE RESIZE: {current_img_size} → {prog_resize_to}px")
+            current_img_size = prog_resize_to
+            new_batch = prog_resize_batch_size or max(16, train_loader.batch_size // 2)
+            preprocess_cfg = model.get_preprocess_config()
+            train_loader, val_loader_new, test_loader_new = _build_loaders(
+                data_dir, preprocess_cfg, new_batch, img_size_override=prog_resize_to,
+            )
+            if val_loader_new is not None:
+                val_loader = val_loader_new
+            if test_loader_new is not None:
+                test_loader = test_loader_new
+            print(f"  >>> New batch size: {new_batch}, loader rebuilt\n")
+
+            # Reset patience — resolution change means model needs time to adapt
+            patience_counter = 0
+
+        # MixUp/CutMix schedule (disabled for ArcFace regardless)
+        if use_arcface or epoch < unfreeze_warmup_epochs:
             ep_mix_prob = 0
             ep_mixup = 0
             ep_cutmix = 0
-            phase_label = "2a-warmup"
+            phase_label = "2a-warmup" if epoch < unfreeze_warmup_epochs else "2b-arcface"
         elif epoch >= remaining - no_aug_final_epochs:
-            # Final refinement — no batch augmentation
             ep_mix_prob = 0
             ep_mixup = 0
             ep_cutmix = 0
             phase_label = "2c-refine"
         else:
-            # Full training with augmentation
             ep_mix_prob = mix_prob
             ep_mixup = mixup_alpha
             ep_cutmix = cutmix_alpha
@@ -321,7 +424,7 @@ def train_model(
         epoch_time = time.time() - epoch_start
 
         record = {
-            "epoch": epoch_num, "phase": phase_label,
+            "epoch": epoch_num, "phase": phase_label, "img_size": current_img_size,
             "train_loss": train_loss, "train_acc": train_acc,
             **val_metrics, "epoch_time": epoch_time,
         }
@@ -339,15 +442,19 @@ def train_model(
         bb_lr = optimizer.param_groups[0]['lr']
         head_lr = optimizer.param_groups[-1]['lr']
         print(
-            f"  E{epoch_num} [{phase_label}]: Train {train_acc:.1f}% | "
+            f"  E{epoch_num} [{phase_label}] {current_img_size}px: Train {train_acc:.1f}% | "
             f"Val T1={val_metrics['top1_acc']:.1f}% T5={val_metrics['top5_acc']:.1f}% | "
             f"LR bb={bb_lr:.1e} head={head_lr:.1e} | {epoch_time:.0f}s{improved}"
         )
 
-        # Early stopping
-        if patience_counter >= early_stop_patience:
+        # Don't early stop before progressive resize kicks in
+        resize_pending = (prog_resize_to and prog_resize_at_epoch
+                          and epoch_num < prog_resize_at_epoch)
+        if patience_counter >= early_stop_patience and not resize_pending:
             print(f"\n  Early stopping: no improvement for {early_stop_patience} epochs")
             break
+        elif patience_counter >= early_stop_patience and resize_pending:
+            print(f"  (patience exhausted but holding for resize at epoch {prog_resize_at_epoch})")
 
     # Save history
     hist_path = os.path.join(output_dir, f"{backbone_name}_history.json")
