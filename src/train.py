@@ -480,11 +480,19 @@ def _save_checkpoint(model, backbone_name, epoch, val_metrics, output_dir):
 
 
 def load_model(backbone_name: str, checkpoint_path: str, device: torch.device = None) -> BreedClassifier:
-    """Load a trained model from checkpoint."""
+    """Load a trained model from checkpoint. Auto-detects ArcFace vs MLP head."""
     if device is None:
         device = get_device()
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model = BreedClassifier(backbone_name, num_classes=ckpt.get("num_classes", NUM_CLASSES), pretrained=False)
-    model.load_state_dict(ckpt["model_state_dict"])
+    # Detect ArcFace by checking for arcface-specific keys
+    state_dict = ckpt["model_state_dict"]
+    use_arcface = any("arcface" in k for k in state_dict.keys())
+    model = BreedClassifier(
+        backbone_name,
+        num_classes=ckpt.get("num_classes", NUM_CLASSES),
+        pretrained=False,
+        use_arcface=use_arcface,
+    )
+    model.load_state_dict(state_dict)
     model.to(device).eval()
     return model
